@@ -1,0 +1,1 @@
+[Random during movement] Sensor Glitch at (0.0, 0.0, 0.0)
