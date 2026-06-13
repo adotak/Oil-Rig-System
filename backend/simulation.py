@@ -4,22 +4,35 @@ from database import SessionLocal, engine
 import models
 import math
 
+# Import legacy domain
+from domain.valves import ButterflyValve, GateValve, CheckValve, PressureReliefValve
+from domain.robotics import MovementArm, TaskArm
+from domain.core import Position3D
+
 # Ensure tables are created
 models.Base.metadata.create_all(bind=engine)
 
-# In-memory robot fleet state
-robot_fleet = [
-    {"id": "AGV-1", "type": "Ground", "status": "Idle", "x": 10, "y": 10, "target_x": 10, "target_y": 10},
-    {"id": "Drone-A", "type": "Air", "status": "Patrol", "x": 80, "y": 20, "target_x": 80, "target_y": 20},
-    {"id": "Insp-Bot", "type": "Ground", "status": "Idle", "x": 50, "y": 90, "target_x": 50, "target_y": 90},
-]
+# Use our new domain models
+valve_v101 = ButterflyValve("V-101", "Sector A")
+valve_p201 = GateValve("P-201", "Sector B")
+valve_k102 = CheckValve("K-102", "Sector C")
+valve_s441 = PressureReliefValve("S-441", "Sector D")
+legacy_valves = [valve_v101, valve_p201, valve_k102, valve_s441]
 
-# Manual override queue for frontend commands
+arm_agv = MovementArm("AGV-1")
+arm_drone = MovementArm("Drone-A")
+arm_drone.position.x = 80
+arm_drone.position.y = 20
+arm_drone.status_text = "Patrol"
+arm_insp = TaskArm("Insp-Bot")
+arm_insp.position.x = 50
+arm_insp.position.y = 90
+legacy_arms = [arm_agv, arm_drone, arm_insp]
+
 manual_overrides = []
 
 def inject_override(action: dict):
     manual_overrides.append(action)
-
 
 # Sector map for rough coordinate translation
 sectors = {
@@ -46,13 +59,11 @@ def dispatch_robot(sector):
     """External hook for the RoboticsAgent to dispatch a robot"""
     if sector in sectors:
         target_x, target_y = sectors[sector]
-        # Find an idle robot
-        for bot in robot_fleet:
-            if bot["status"] in ["Idle", "Patrol"]:
-                bot["target_x"] = target_x
-                bot["target_y"] = target_y
-                bot["status"] = "Dispatched"
-                return bot["id"]
+        for arm in legacy_arms:
+            if arm.status_text in ["Idle", "Patrol"]:
+                arm.target_pos = Position3D(target_x, target_y, 0)
+                arm.status_text = "Dispatched"
+                return arm.arm_id
     return None
 
 def step_simulation():
@@ -69,60 +80,61 @@ def step_simulation():
         for override in current_overrides:
             if override.get("action") == "esd":
                 eq_id = override.get("equipment_id")
+                # Trigger legacy valve close
+                for v in legacy_valves:
+                    if v.config.id == eq_id:
+                        v.close()
                 eq = db.query(models.Equipment).filter(models.Equipment.id == eq_id).first()
                 if eq:
                     eq.status = "Offline"
                     eq.health_score = 100.0  # Safe mode resets simulation health for this run
                     db.commit()
 
-        # Move robots
-        for bot in robot_fleet:
-            if bot["status"] == "Dispatched":
-                dx = bot["target_x"] - bot["x"]
-                dy = bot["target_y"] - bot["y"]
-                distance = math.hypot(dx, dy)
-                
-                if distance < 2:
-                    bot["status"] = "Inspecting"
-                    bot["x"] = bot["target_x"]
-                    bot["y"] = bot["target_y"]
-                else:
-                    speed = 4 if bot["type"] == "Air" else 2
-                    bot["x"] += (dx / distance) * speed
-                    bot["y"] += (dy / distance) * speed
-            elif bot["status"] == "Inspecting":
-                # Finish inspection randomly
+        # Move legacy robots
+        robot_fleet_broadcast = []
+        for arm in legacy_arms:
+            if arm.status_text == "Dispatched" and hasattr(arm, 'target_pos'):
+                arm.move_to(arm.target_pos)
+                dx = arm.target_pos.x - arm.position.x
+                dy = arm.target_pos.y - arm.position.y
+                if math.hypot(dx, dy) < 2:
+                    arm.status_text = "Inspecting"
+            elif arm.status_text == "Inspecting":
                 if random.random() < 0.2:
-                    bot["status"] = "Idle"
-            elif bot["status"] == "Patrol":
-                # Wander slightly
-                bot["x"] = max(0, min(100, bot["x"] + random.uniform(-1, 1)))
-                bot["y"] = max(0, min(100, bot["y"] + random.uniform(-1, 1)))
+                    arm.status_text = "Idle"
+            elif arm.status_text == "Patrol":
+                arm.position.x = max(0, min(100, arm.position.x + random.uniform(-1, 1)))
+                arm.position.y = max(0, min(100, arm.position.y + random.uniform(-1, 1)))
+
+            # Append mapped status to broadcast
+            robot_fleet_broadcast.append({
+                "id": arm.arm_id,
+                "type": arm.type_str,
+                "status": arm.status_text,
+                "x": arm.position.x,
+                "y": arm.position.y,
+                "battery": arm.battery_level
+            })
 
         equipments = db.query(models.Equipment).all()
         for eq in equipments:
             if eq.status == "Offline":
                 continue # Skip processing for offline equipment
                 
-            if eq.type == "Valve":
+            legacy_v = next((v for v in legacy_valves if v.config.id == eq.id), None)
+            if legacy_v:
+                legacy_v.monitor()
                 metric = "pressure"
-                value = random.uniform(1100, 1200)
-            elif eq.type == "Pump":
-                metric = "flow_rate"
-                value = random.uniform(80, 100)
-            elif eq.type == "Compressor":
-                metric = "vibration"
-                value = random.uniform(1.0, 3.5)
+                value = legacy_v.current_pressure
                 
-                if random.random() < 0.10: 
-                    value += random.uniform(2.0, 5.0)
-                    eq.health_score -= 5.0
-                    if eq.health_score < 40:
-                        eq.status = "Critical"
-                        generated_events.append({"equipment_id": eq.id, "metric": "status", "value": "Critical"})
-                    elif eq.health_score < 80:
-                        eq.status = "Warning"
+                if legacy_v.state.value == "FAULT":
+                    eq.health_score -= 15.0
+                    eq.status = "Critical"
+                    generated_events.append({"equipment_id": eq.id, "metric": "status", "value": "Critical"})
+                elif legacy_v.state.value == "CLOSED":
+                    eq.status = "Offline"
             else:
+                # Fallback for non-mapped items
                 metric = "status"
                 value = 1.0
 
@@ -145,4 +157,4 @@ def step_simulation():
     finally:
         db.close()
         
-    return generated_events, robot_fleet
+    return generated_events, robot_fleet_broadcast

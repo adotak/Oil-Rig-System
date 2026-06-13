@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import './index.css'
+import { Login } from './Login'
+import { AnalyticsPanel } from './AnalyticsPanel'
 
 interface Equipment {
   id: string
@@ -45,6 +47,9 @@ function App() {
   const [logs, setLogs] = useState<string[]>([])
   const [cvAlerts, setCvAlerts] = useState<CVAlert[]>([])
   const [activeRca, setActiveRca] = useState<RCAReport | null>(null)
+  
+  const [token, setToken] = useState<string | null>(localStorage.getItem('token'))
+  const [role, setRole] = useState<string | null>(localStorage.getItem('role'))
   
   const ws = useRef<WebSocket | null>(null)
   const logContainerRef = useRef<HTMLDivElement>(null)
@@ -120,23 +125,49 @@ function App() {
   const handleDispatch = async (sector: string) => {
     await fetch('http://localhost:8000/api/dispatch', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ sector })
     })
   }
 
   const handleESD = async (equipment_id: string) => {
+    if (role !== 'Admin') {
+      alert("UNAUTHORIZED: Only Admin can trigger ESD.");
+      return;
+    }
     await fetch('http://localhost:8000/api/esd', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ equipment_id })
     })
   }
 
   const handleResolveCV = async () => {
-    await fetch('http://localhost:8000/api/resolve_cv', { method: 'POST' })
+    await fetch('http://localhost:8000/api/resolve_cv', { 
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
     setCvAlerts([])
   }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('role');
+    setToken(null);
+    setRole(null);
+  }
+
+  if (!token) {
+    return (
+      <Login onLogin={(t, r) => {
+        localStorage.setItem('token', t);
+        localStorage.setItem('role', r);
+        setToken(t);
+        setRole(r);
+      }} />
+    );
+  }
+
 
   return (
     <div className="app-container">
@@ -147,7 +178,9 @@ function App() {
           Autonomous Command Center<br/>
           Status: Active<br/>
           CV Subsystem: ONLINE<br/>
-          Swarm Link: CONNECTED
+          Swarm Link: CONNECTED<br/><br/>
+          <strong>User: {role}</strong><br/>
+          <button onClick={handleLogout} style={{ marginTop: '1rem', background: 'transparent', color: 'var(--accent-red)', border: '1px solid var(--accent-red)', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer' }}>Logout</button>
         </div>
       </aside>
 
@@ -271,14 +304,19 @@ function App() {
                   <div className="robot-tooltip">
                     <strong>{bot.id}</strong> ({bot.type})<br/>
                     Status: {bot.status}<br/>
-                    Pos: ({bot.x.toFixed(1)}, {bot.y.toFixed(1)})<br/>
-                    Target: ({bot.target_x.toFixed(1)}, {bot.target_y.toFixed(1)})
+                    Pos: ({bot.x?.toFixed(1) || 0}, {bot.y?.toFixed(1) || 0})<br/>
+                    {bot.target_x !== undefined && bot.target_y !== undefined && (
+                      <>Target: ({bot.target_x.toFixed(1)}, {bot.target_y.toFixed(1)})</>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
         </section>
+
+        {/* Analytics Panel */}
+        <AnalyticsPanel token={token} />
 
         {/* Bottom Panels (Logs & CV) */}
         <section className="bottom-panels">

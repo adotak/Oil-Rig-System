@@ -3,7 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import json
 from database import engine, Base, SessionLocal
-import models, simulation, agents
+import models, simulation, agents, auth
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
 
 app = FastAPI(title="OilRigX AI Platform")
 
@@ -16,6 +19,7 @@ app.add_middleware(
 )
 
 Base.metadata.create_all(bind=engine)
+auth.seed_users()
 
 class ConnectionManager:
     def __init__(self):
@@ -130,16 +134,34 @@ class DispatchRequest(BaseModel):
 class ESDRequest(BaseModel):
     equipment_id: str
 
+@app.post("/api/token")
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(auth.get_db)):
+    user = auth.get_user(db, form_data.username)
+    if not user or not auth.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = auth.create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer", "role": user.role}
+
 @app.post("/api/dispatch")
-def api_dispatch(req: DispatchRequest):
+def api_dispatch(req: DispatchRequest, current_user: models.User = Depends(auth.get_current_user)):
     simulation.dispatch_robot(req.sector)
-    return {"status": "dispatched", "message": f"Robot dispatched to {req.sector}"}
+    return {"status": "dispatched", "message": f"Robot dispatched to {req.sector} by {current_user.username}"}
 
 @app.post("/api/esd")
-def api_esd(req: ESDRequest):
+def api_esd(req: ESDRequest, current_admin: models.User = Depends(auth.get_current_admin_user)):
     simulation.inject_override({"action": "esd", "equipment_id": req.equipment_id})
-    return {"status": "esd_triggered", "message": f"ESD triggered for {req.equipment_id}"}
+    return {"status": "esd_triggered", "message": f"ESD triggered for {req.equipment_id} by {current_admin.username}"}
 
 @app.post("/api/resolve_cv")
-def api_resolve_cv():
+def api_resolve_cv(current_user: models.User = Depends(auth.get_current_user)):
     return {"status": "resolved", "message": "CV anomalies dismissed"}
+
+@app.get("/api/history/{equipment_id}")
+def get_history(equipment_id: str, db: Session = Depends(auth.get_db)):
+    readings = db.query(models.SensorReading).filter(models.SensorReading.equipment_id == equipment_id).order_by(models.SensorReading.timestamp.desc()).limit(30).all()
+    # Return ascending for the chart
+    return list(reversed(readings))
