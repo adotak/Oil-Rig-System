@@ -2,6 +2,15 @@ import random
 import re
 from database import SessionLocal
 import models
+import os
+
+try:
+    import joblib
+    import pandas as pd
+    ml_model = joblib.load("anomaly_model.joblib") if os.path.exists("anomaly_model.joblib") else None
+except ImportError:
+    ml_model = None
+
 
 class BaseAgent:
     def __init__(self, name):
@@ -17,6 +26,16 @@ class MaintenanceAgent(BaseAgent):
     def process_event(self, event_data):
         if event_data.get("metric") == "vibration" and event_data.get("value", 0) > 4.0:
             return {"type": "log", "level": "alert", "message": f"[{self.name}] ALERT: High vibration detected on {event_data['equipment_id']}. Initiating predictive maintenance protocol. RUL estimated at 48 hours."}
+            
+        # ML Inference Logic
+        if ml_model and event_data.get("metric") == "pressure":
+            import pandas as pd
+            # Create a DataFrame with valid feature names for prediction
+            X_live = pd.DataFrame([{"pressure": event_data.get("value", 0)}])
+            prediction = ml_model.predict(X_live)
+            if prediction[0] == -1:
+                return {"type": "log", "level": "alert", "message": f"[{self.name}] 🧠 ML ANOMALY DETECTED: The IsolationForest model flagged pressure {event_data.get('value', 0):.2f} as an anomaly on {event_data['equipment_id']}."}
+                
         return None
 
 class EmergencyAgent(BaseAgent):
