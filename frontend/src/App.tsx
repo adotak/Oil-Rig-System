@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import './index.css'
 import { Login } from './Login'
 import { AnalyticsPanel } from './AnalyticsPanel'
+import { ChatPanel } from './ChatPanel'
 
 interface Equipment {
   id: string
@@ -379,6 +380,7 @@ function App() {
           </div>
         </div>
       )}
+      <ChatPanel token={token} />
     </div>
   )
 }

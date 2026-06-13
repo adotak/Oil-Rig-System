@@ -1,4 +1,7 @@
 import random
+import re
+from database import SessionLocal
+import models
 
 class BaseAgent:
     def __init__(self, name):
@@ -135,4 +138,60 @@ class SupervisorAgent(BaseAgent):
                 
         return actions
 
+class NLPAgent(BaseAgent):
+    def __init__(self):
+        super().__init__("ORION NLP Engine")
+
+    def chat(self, message: str) -> str:
+        msg_lower = message.lower()
+        
+        # 1. Parse Equipment Entities
+        equipment_ids = ["V-101", "P-201", "K-102", "S-441"]
+        mentioned_eq = [eq for eq in equipment_ids if eq.lower() in msg_lower]
+        
+        if not mentioned_eq:
+            if "hello" in msg_lower or "hi" in msg_lower:
+                return "Greetings. I am ORION, your autonomous supervisor. I am monitoring live telemetry. How can I assist you?"
+            if "robot" in msg_lower or "swarm" in msg_lower or "drone" in msg_lower:
+                return "The robotics swarm (AGVs and Drones) is currently on standby or patrolling. They will automatically dispatch to any CV safety anomalies or critical equipment failures."
+            return "I am ORION. I am analyzing the live telemetry. Please mention a specific equipment tag (e.g., V-101, P-201) if you want a detailed RAG status report."
+
+        # 2. RAG (Retrieval)
+        eq_id = mentioned_eq[0]
+        db = SessionLocal()
+        try:
+            eq = db.query(models.Equipment).filter(models.Equipment.id == eq_id).first()
+            if not eq:
+                return f"I could not find equipment {eq_id} in my database."
+                
+            readings = db.query(models.SensorReading).filter(
+                models.SensorReading.equipment_id == eq_id,
+                models.SensorReading.metric == "pressure"
+            ).order_by(models.SensorReading.timestamp.desc()).limit(3).all()
+            
+            # 3. Generation (Mock LLM)
+            response = f"**RAG Analysis for {eq.name} ({eq.id})**\n\n"
+            response += f"**Current Status:** {eq.status}\n"
+            response += f"**Health Score:** {eq.health_score:.1f}%\n"
+            
+            if readings:
+                avg_pressure = sum(r.value for r in readings) / len(readings)
+                response += f"**Recent Pressure Trend:** Averaging {avg_pressure:.1f} over the last few cycles.\n\n"
+                
+                if eq.status == "Critical" or eq.status == "Offline":
+                    response += "🚨 **AI Diagnosis:** Telemetry indicates a severe anomaly. The Emergency Agent has likely triggered an Auto-ESD. I recommend a manual inspection of the upstream flow regulators immediately."
+                elif avg_pressure > 1100:
+                    response += "⚠️ **Warning:** Pressure is trending abnormally high. The Maintenance Agent is monitoring closely."
+                else:
+                    response += "✅ **Conclusion:** The equipment is operating within nominal safety parameters."
+            else:
+                response += "No recent pressure telemetry found."
+                
+            return response
+        except Exception as e:
+            return f"An error occurred while analyzing the database: {e}"
+        finally:
+            db.close()
+
 supervisor = SupervisorAgent()
+nlp_agent = NLPAgent()

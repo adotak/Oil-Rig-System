@@ -134,6 +134,9 @@ class DispatchRequest(BaseModel):
 class ESDRequest(BaseModel):
     equipment_id: str
 
+class ChatRequest(BaseModel):
+    message: str
+
 @app.post("/api/token")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(auth.get_db)):
     user = auth.get_user(db, form_data.username)
@@ -165,3 +168,8 @@ def get_history(equipment_id: str, db: Session = Depends(auth.get_db)):
     readings = db.query(models.SensorReading).filter(models.SensorReading.equipment_id == equipment_id).order_by(models.SensorReading.timestamp.desc()).limit(30).all()
     # Return ascending for the chart
     return list(reversed(readings))
+
+@app.post("/api/chat")
+def api_chat(req: ChatRequest, current_user: models.User = Depends(auth.get_current_user)):
+    response = agents.nlp_agent.chat(req.message)
+    return {"reply": response}
